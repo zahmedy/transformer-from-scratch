@@ -1,15 +1,18 @@
 import torch 
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
+
 from dataset import BilingualDataset, causal_mask
 from model import build_transformer
 from config import get_weights_file_path, get_config
-from datasets import load_dataset
+
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.trainers import WordLevelTrainer
 from tokenizers.pre_tokenizers import Whitespace
-from torch.utils.tensorboard import SummaryWriter
+
+from datasets import load_dataset
 from tqdm import tqdm
 from pathlib import Path
 
@@ -92,12 +95,10 @@ def run_validation(model,
                 break
 
 
-
-
-
 def get_all_sentences(ds, lang):
     for item in ds:
         yield item['translation'][lang]
+
 
 def get_or_build_tokenizer(config, ds, lang):
     tokenizer_path = Path(config['tokenizer_file'].format(lang))
@@ -110,6 +111,7 @@ def get_or_build_tokenizer(config, ds, lang):
     else:
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
     return tokenizer
+
 
 def get_ds(config):
     ds_raw = load_dataset('opus_books', f'{config["lang_src"]}-{config["lang_tgt"]}', split='train')
@@ -138,18 +140,26 @@ def get_ds(config):
     print(f'Max lengh of source setence: {max_len_src}')
     print(f'Max lengh of target setence: {max_len_tgt}')
 
-    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True)
-    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True)
+    num_workers = config.get('num_workers', 0)
+    train_dataloader = DataLoader(train_ds, batch_size=config['batch_size'], shuffle=True, num_workers=num_workers)
+    val_dataloader = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=num_workers)
 
     return train_dataloader, val_dataloader, tokenizer_src, tokenizer_tgt
+
 
 def get_model(config, vocab_src_Len, vocab_tgt_Len):
     model = build_transformer(vocab_src_Len, vocab_tgt_Len, config['seq_len'], config['seq_len'], config['d_model'])
     return model
 
+
 def train_model(config):
-    # Define the device 
-    device = torch.device('cude' if torch.cuda.is_available() else ('cpu'))
+    # Define the device (prioritize CUDA, then Metal on Apple Silicon, otherwise CPU)
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+    else:
+        device = torch.device('cpu')
     print(f'Using device {device}')
 
     Path(config['model_folder']).mkdir(parents=True, exist_ok=True)
@@ -201,10 +211,9 @@ def train_model(config):
             # Backpropgate the loss
             loss.backward()
 
-            # update the weights
+            # update the w eights
             optimizer.step()
             optimizer.zero_grad()
-
             global_step += 1
 
         run_validation(model, val_dataloader, tokenizer_src, tokenizer_tgt, config['seq_len'], device, lambda msg: batch_iterator.write(msg), global_step, writer)
